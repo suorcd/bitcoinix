@@ -90,6 +90,32 @@ let
         '';
       };
     };
+    # Common identity and policy settings, so they don't have to go through
+    # `extraConfig`, which is unsupported and warns.
+    alias = mkOption {
+      type = types.nullOr types.singleLineStr;
+      default = null;
+      example = "bobot";
+      description = ''
+        The alias to announce to the network
+        ([`alias`](https://github.com/lightningnetwork/lnd/blob/master/sample-lnd.conf)).
+
+        When unset, lnd keeps the alias it used on its previous run and falls
+        back to a value derived from the node pubkey.
+      '';
+    };
+    acceptKeysend = mkOption {
+      type = types.bool;
+      default = false;
+      description = ''
+        Accept spontaneous keysend payments
+        ([`accept-keysend`](https://github.com/lightningnetwork/lnd/blob/master/sample-lnd.conf)).
+
+        Keysend payments are pushed to this node without an invoice, so every
+        peer that knows the node pubkey can send to it. Setting this to `false`
+        does not settle keysend payments that were already accepted.
+      '';
+    };
     extraConfig = mkOption {
       type = types.lines;
       default = "";
@@ -184,6 +210,9 @@ let
     bitcoind.zmqpubrawtx=${zmqHandleSpecialAddress bitcoind.zmqpubrawtx}
 
     wallet-unlock-password-file=${secretsDir}/lnd-wallet-password
+
+    ${optionalString (cfg.alias != null) "alias=${cfg.alias}"}
+    ${optionalString cfg.acceptKeysend "accept-keysend=1"}
 
     ${cfg.extraConfig}
   '';

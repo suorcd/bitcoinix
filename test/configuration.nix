@@ -90,6 +90,16 @@ let
     externalip = lib.findFirst (lib.hasInfix "externalip=") ""
       (lib.splitString "\n" config.systemd.services.lnd.preStart);
   in lib.head (builtins.match ''.*externalip=\$\(.*\)(.*)"'' externalip);
+  # lnd writes its config into the store and only references it from preStart,
+  # so read the generated file back through that reference.
+  lndConfigLines = module: let
+    config = evaluate {
+      imports = [ module ];
+      services.lnd.enable = true;
+    };
+    catLine = lib.findFirst (lib.hasInfix "cat /nix/store") ""
+      (lib.splitString "\n" config.systemd.services.lnd.preStart);
+  in lib.splitString "\n" (builtins.readFile (lib.last (lib.splitString "cat " catLine)));
   netns = evaluate {
     imports = [ lightning ];
     services.lnd.port = 9736;
@@ -521,6 +531,39 @@ let
         { services.lnd.getPublicAddressCmd = "echo 203.0.113.10:19735"; }
       ];
       expected = [ ":9736" ":9735" ":9736" "" ];
+    };
+    testLndIdentityOptions = {
+      expr = let
+        lines = map lib.trim (lndConfigLines {
+          services.lnd = { alias = "bobot"; acceptKeysend = true; };
+        });
+      in {
+        alias = lib.elem "alias=bobot" lines;
+        acceptKeysend = lib.elem "accept-keysend=1" lines;
+        # Dedicated options replace the extraConfig warning
+        warnings = extraConfigWarnings "services.lnd.extraConfig" (evaluate {
+          services.lnd = { enable = true; alias = "bobot"; acceptKeysend = true; };
+        });
+      };
+      expected = { alias = true; acceptKeysend = true; warnings = []; };
+    };
+    testLndIdentityDefaults = {
+      expr = let
+        lines = map lib.trim (lndConfigLines {});
+      in {
+        alias = lib.any (lib.hasPrefix "alias=") lines;
+        # Keysend acceptance stays off unless it is asked for
+        acceptKeysend = lib.any (lib.hasPrefix "accept-keysend") lines;
+        warnings = extraConfigWarnings "services.lnd.extraConfig"
+          (evaluate { services.lnd.enable = true; });
+      };
+      expected = { alias = false; acceptKeysend = false; warnings = []; };
+    };
+    testLndAliasRejectsExtraConfigLines = {
+      expr = (builtins.tryEval (lib.isString (evaluate {
+        services.lnd = { enable = true; alias = "bobot\naccept-keysend=1"; };
+      }).services.lnd.alias)).success;
+      expected = false;
     };
     testNetnsRESTAllowed = { expr = failedAssertions netns; expected = []; };
     testNetnsRejectsNftables = {
