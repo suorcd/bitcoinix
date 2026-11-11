@@ -3,6 +3,14 @@
 For configuration migrations reported during evaluation, follow the
 [upgrading guide](upgrading.md).
 
+## 0.1.7
+
+#### lnd alias and acceptKeysend options
+
+`services.lnd.alias` and `services.lnd.acceptKeysend` are new options for lnd's
+`alias` and `accept-keysend` settings, so they no longer need
+`services.lnd.extraConfig`, which is unsupported and warns.
+
 ## 0.1.6
 
 #### Tor enforcement allows only local addresses
