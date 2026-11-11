@@ -44,6 +44,17 @@ let
       default = "${cfg.dataDir}/chain/bitcoin/${bitcoind.network}";
       description = "The network data directory.";
     };
+    configText = mkOption {
+      internal = true;
+      readOnly = true;
+      type = types.str;
+      default = configFileText;
+      description = ''
+        The generated {file}`lnd.conf`, before the bitcoind RPC password is
+        appended at start. Exposed so the configuration checks can read it
+        without going through a store path.
+      '';
+    };
     tor-socks = mkOption {
       type = types.nullOr types.str;
       default = if cfg.tor.proxy then config.nix-bitcoin.torClientAddressWithPort else null;
@@ -89,6 +100,35 @@ let
           This works the same as lnd option {option}`tlsextradomain`.
         '';
       };
+    };
+    # Common identity and policy settings, so they don't have to go through
+    # `extraConfig`, which is unsupported and warns.
+    alias = mkOption {
+      type = types.nullOr types.singleLineStr;
+      default = null;
+      example = "mynode";
+      description = ''
+        The alias to announce to the network
+        ([`alias`](https://github.com/lightningnetwork/lnd/blob/master/sample-lnd.conf)).
+
+        lnd accepts at most 32 bytes, not characters, and fails at startup when
+        the alias is longer. When unset (or empty), lnd keeps the alias it used
+        on its previous run and falls back to a value derived from the node
+        pubkey.
+      '';
+    };
+    acceptKeysend = mkOption {
+      type = types.bool;
+      default = false;
+      description = ''
+        Accept spontaneous keysend payments
+        ([`accept-keysend`](https://github.com/lightningnetwork/lnd/blob/master/sample-lnd.conf)).
+
+        Keysend payments are pushed without an invoice, so any peer that knows
+        the node pubkey and has a route to it can pay this node. This only
+        affects newly offered payments: turning it off does not settle, cancel
+        or reverse payments that were already accepted.
+      '';
     };
     extraConfig = mkOption {
       type = types.lines;
@@ -159,7 +199,9 @@ let
 
   bitcoindRpcAddress = nbLib.address bitcoind.rpc.address;
   networkDir = cfg.networkDir;
-  configFile = pkgs.writeText "lnd.conf" ''
+  # The config as text, so the configuration checks can read it as a plain
+  # string instead of a store path (see the `configText` option).
+  configFileText = ''
     datadir=${cfg.dataDir}
     tlscertpath=${cfg.certPath}
     tlskeypath=${secretsDir}/lnd-key
@@ -185,8 +227,16 @@ let
 
     wallet-unlock-password-file=${secretsDir}/lnd-wallet-password
 
+    ${optionalString (cfg.alias != null && cfg.alias != "") "alias=${cfg.alias}"}
+    ${optionalString cfg.acceptKeysend "accept-keysend=1"}
+
     ${cfg.extraConfig}
   '';
+  # Keep `writeText` here, not `builtins.toFile`: the config includes
+  # `extraConfig`, and a user may interpolate store paths there, which `toFile`
+  # refuses. Nothing reads this path during evaluation any more — the checks
+  # read `configText` instead.
+  configFile = pkgs.writeText "lnd.conf" configFileText;
 
   zmqHandleSpecialAddress = builtins.replaceStrings [ "0.0.0.0" "[::]" ] [ "127.0.0.1" "[::1]" ];
 
@@ -219,6 +269,16 @@ in {
           LND and clightning can't both bind to lightning port 9735. Either
           disable LND/clightning or change services.clightning.port or
           services.lnd.port to a port other than 9735.
+        '';
+      }
+      # `lnwire.NodeAlias` holds 32 bytes and `lnwire.NewNodeAlias` returns an
+      # error above that, which lnd treats as fatal when it builds its node
+      # announcement at startup. Bytes, not characters: a multibyte alias runs
+      # out of room sooner.
+      { assertion = cfg.alias == null || builtins.stringLength cfg.alias <= 32;
+        message = ''
+          services.lnd.alias is ${toString (builtins.stringLength (cfg.alias or ""))} bytes,
+          but lnd accepts at most 32 bytes. Count bytes, not characters.
         '';
       }
     ];

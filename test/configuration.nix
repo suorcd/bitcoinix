@@ -90,6 +90,15 @@ let
     externalip = lib.findFirst (lib.hasInfix "externalip=") ""
       (lib.splitString "\n" config.systemd.services.lnd.preStart);
   in lib.head (builtins.match ''.*externalip=\$\(.*\)(.*)"'' externalip);
+  # The generated config as text. Reading the recommended `configText` option
+  # keeps this a pure evaluation: no store path, so nothing gets realised for
+  # the other system in `nix flake check --all-systems`.
+  lndConfigLines = module: let
+    config = evaluate {
+      imports = [ module ];
+      services.lnd.enable = true;
+    };
+  in lib.splitString "\n" config.services.lnd.configText;
   netns = evaluate {
     imports = [ lightning ];
     services.lnd.port = 9736;
@@ -521,6 +530,61 @@ let
         { services.lnd.getPublicAddressCmd = "echo 203.0.113.10:19735"; }
       ];
       expected = [ ":9736" ":9735" ":9736" "" ];
+    };
+    testLndAliasAndKeysend = {
+      expr = let
+        lines = map lib.trim (lndConfigLines {
+          services.lnd = { alias = "mynode"; acceptKeysend = true; };
+        });
+      in {
+        alias = lib.elem "alias=mynode" lines;
+        acceptKeysend = lib.elem "accept-keysend=1" lines;
+      };
+      expected = { alias = true; acceptKeysend = true; };
+    };
+    testLndAliasAndKeysendDefaults = {
+      expr = let
+        lines = map lib.trim (lndConfigLines {});
+        # lnd treats an empty alias as unset, so no line is written
+        emptyAlias = map lib.trim (lndConfigLines { services.lnd.alias = ""; });
+      in {
+        alias = lib.any (lib.hasPrefix "alias=") lines;
+        acceptKeysend = lib.any (lib.hasPrefix "accept-keysend") lines;
+        emptyAliasWritten = lib.any (lib.hasPrefix "alias=") emptyAlias;
+      };
+      expected = { alias = false; acceptKeysend = false; emptyAliasWritten = false; };
+    };
+    # The dedicated options are what silences the extraConfig warning
+    testLndAliasAndKeysendReplaceExtraConfig = {
+      expr = {
+        viaOptions = builtins.length (extraConfigWarnings "services.lnd.extraConfig" (evaluate {
+          services.lnd = { enable = true; alias = "mynode"; acceptKeysend = true; };
+        }));
+        viaExtraConfig = builtins.length (extraConfigWarnings "services.lnd.extraConfig" (evaluate {
+          services.lnd = { enable = true; extraConfig = "alias=mynode\naccept-keysend=1"; };
+        }));
+      };
+      expected = { viaOptions = 0; viaExtraConfig = 1; };
+    };
+    testLndAliasLengthLimit = {
+      # 33 bytes; lnd's own limit is bytes, so a multibyte alias counts more
+      # than its 11 characters
+      expr = map (lib.hasInfix "at most 32 bytes") (failedAssertions (evaluate {
+        services.lnd = { enable = true; alias = lib.concatStrings (lib.replicate 11 "⚡"); };
+      }));
+      expected = [ true ];
+    };
+    testLndAliasFits32Bytes = {
+      expr = failedAssertions (evaluate {
+        services.lnd = { enable = true; alias = "twenty-nine-bytes-of-alias-ok"; };
+      });
+      expected = [];
+    };
+    testLndAliasRejectsExtraConfigLines = {
+      expr = (builtins.tryEval (lib.isString (evaluate {
+        services.lnd = { enable = true; alias = "mynode\naccept-keysend=1"; };
+      }).services.lnd.alias)).success;
+      expected = false;
     };
     testNetnsRESTAllowed = { expr = failedAssertions netns; expected = []; };
     testNetnsRejectsNftables = {
